@@ -22,7 +22,7 @@ def main():
     parser.add_argument("--context-length", type=int, default=128, help="Context length for the model.")
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size for benchmarking.")
     parser.add_argument("--vocab-size", type=int, default=10000, help="Vocabulary size.")
-    parser.add_argument("--warmup-steps", type=int, default=5, help="Number of warm-up steps before timing.")
+    parser.add_argument("--warmup-steps", type=int, default=0, help="Number of warm-up steps before timing.")
     parser.add_argument("--num-steps", type=int, default=10, help="Number of steps to measure.")
     parser.add_argument("--backward", action="store_true", help="Include backward pass in benchmarking.")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device to run on.")
@@ -50,40 +50,45 @@ def main():
     print(f"Warmup steps: {args.warmup_steps} | Measurement steps: {args.num_steps} | Device: {args.device}\n")
 
     # 3. Run warm-up steps
-    for _ in range(args.warmup_steps):
-        out = model(x)
-        if args.backward:
-            loss = out.mean()
-            loss.backward()
-            model.zero_grad()
-            
-        if args.device == "cuda":
-            torch.cuda.synchronize()
+    with torch.cuda.nvtx.range("warmup"):
+        for _ in range(args.warmup_steps):
+            out = model(x)
+            if args.backward:
+                loss = out.mean()
+                loss.backward()
+                model.zero_grad()
+                
+            if args.device == "cuda":
+                torch.cuda.synchronize()
 
     # 4. Time the execution of n steps
     fwd_times = []
     bwd_times = []
+    with torch.cuda.nvtx.range("measurement"):
+        for _ in range(args.num_steps):
+            # Forward pass
+            # start_fwd = timeit.default_timer()
+            with torch.cuda.nvtx.range("forward_pass"):
+                out = model(x)
+                if args.device == "cuda":
+                    torch.cuda.synchronize()
+            # end_fwd = timeit.default_timer()
+            # fwd_times.append(end_fwd - start_fwd)
 
-    for _ in range(args.num_steps):
-        # Forward pass
-        start_fwd = timeit.default_timer()
-        out = model(x)
-        if args.device == "cuda":
-            torch.cuda.synchronize()
-        end_fwd = timeit.default_timer()
-        fwd_times.append(end_fwd - start_fwd)
-
-        # Backward pass
-        if args.backward:
-            loss = out.mean()
-            start_bwd = timeit.default_timer()
-            loss.backward()
-            if args.device == "cuda":
-                torch.cuda.synchronize()
-            end_bwd = timeit.default_timer()
-            bwd_times.append(end_bwd - start_bwd)
-            
-            model.zero_grad()
+            # Backward pass
+            if args.backward:
+                with torch.cuda.nvtx.range("backward_pass"):
+                    loss = out.mean()
+                    # start_bwd = timeit.default_timer()
+                    loss.backward()
+                    if args.device == "cuda":
+                        torch.cuda.synchronize()
+                    # end_bwd = timeit.default_timer()
+                    # bwd_times.append(end_bwd - start_bwd)
+                # 优化器相关
+                with torch.cuda.nvtx.range("optimizer_step"):
+                    pass
+                model.zero_grad()
 
     # Print results
     fwd_avg = np.mean(fwd_times) * 1000
